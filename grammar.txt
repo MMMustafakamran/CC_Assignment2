@@ -1,0 +1,4 @@
+S -> if E then S else S | if E then S | a
+E -> E + T | T
+T -> T * F | F
+F -> ( E ) | id
