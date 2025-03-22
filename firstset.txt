@@ -1,0 +1,48 @@
+
+
+
+---------------------------left factoring 
+
+S -> if E then S else S
+
+S -> if E then S
+
+S -> A
+
+
+
+
+
+
+---------------------------FIRST SEt
+
+Example 1: 
+
+Production Rules of Grammar
+E  -> T E’
+E’ -> + T E’| ε
+T  -> F T’
+T’ -> * F T’ |  ε
+F  -> ( E ) | id
+
+FIRST sets
+FIRST(E) = FIRST(T) = { ( , id }
+FIRST(E’) = { +, ε}
+FIRST(T) = FIRST(F) = { ( , id }
+FIRST(T’) = { *, ε }
+FIRST(F) = { ( , id }
+Example 2: 
+
+Production Rules of Grammar
+S -> A C B | C b b | B a
+A -> d a | B C
+B -> g | ε
+C -> h | ε
+
+FIRST sets
+FIRST(S) = FIRST(ACB) U FIRST(Cbb) U FIRST(Ba)
+         = { d, g, h, b, a,  ε}
+FIRST(A) = { d } U FIRST(BC) 
+         = { d, g, h,  ε }
+FIRST(B) = { g ,  ε }
+FIRST(C) = { h ,  ε }

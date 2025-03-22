@@ -12,6 +12,15 @@ using namespace std;
 typedef vector<string> Production;
 typedef vector<Production> ProductionList;
 typedef map<string, ProductionList> Grammar;
+// We will store FIRST sets as vectors (to preserve insertion order).
+typedef map<string, vector<string>> FirstSet;
+
+// Global vector to preserve non-terminal order.
+vector<string> nonTerminalOrder;
+
+// --------------------------
+// Utility Functions & Parsing
+// --------------------------
 
 // Helper function: split a string by whitespace.
 vector<string> split(const string &s) {
@@ -24,13 +33,11 @@ vector<string> split(const string &s) {
 }
 
 // Preprocess the input line to ensure tokens are separated by spaces.
-// We insert spaces around operators and parentheses: +, *, (, and )
 string preprocessLine(const string &line) {
     string result;
-    // We'll leave the arrow "->" unchanged.
     for (size_t i = 0; i < line.size(); ++i) {
         char c = line[i];
-        if (c == '-' && i + 1 < line.size() && line[i+1] == '>') {
+        if (c == '-' && i+1 < line.size() && line[i+1] == '>') {
             result += " -> ";
             i++; // skip '>'
         } else if (c == '|' ) {
@@ -46,53 +53,49 @@ string preprocessLine(const string &line) {
     return result;
 }
 
-// Parse a line of the form: NonTerminal -> production1 | production2 | ...
-// Each production is split into tokens.
+// Parse a production line of the form: NonTerminal -> production1 | production2 | ...
 void parseProductionLine(const string &line, Grammar &grammar) {
-    // Preprocess the line to add spaces around operators.
     string processedLine = preprocessLine(line);
-    
     size_t arrowPos = processedLine.find("->");
     if (arrowPos == string::npos)
-        return; // Skip malformed lines.
-
-    // Get the non-terminal (trim spaces).
+        return;
+    
     string nonTerminal = processedLine.substr(0, arrowPos);
-    // Remove any extra spaces.
     nonTerminal.erase(remove(nonTerminal.begin(), nonTerminal.end(), ' '), nonTerminal.end());
     
-    string rhs = processedLine.substr(arrowPos + 2); // production part after "->"
-    // Remove leading spaces.
-    while (!rhs.empty() && isspace(rhs[0]))
-        rhs.erase(0, 1);
-
-    // Split productions separated by '|'
+    // Record nonTerminal order if not already present.
+    if(find(nonTerminalOrder.begin(), nonTerminalOrder.end(), nonTerminal) == nonTerminalOrder.end()){
+        nonTerminalOrder.push_back(nonTerminal);
+    }
+    
+    string rhs = processedLine.substr(arrowPos + 2);
+    while(!rhs.empty() && isspace(rhs[0]))
+        rhs.erase(0,1);
+    
     istringstream prodStream(rhs);
     string production;
-    while (getline(prodStream, production, '|')) {
-        // Trim leading/trailing spaces.
-        while (!production.empty() && isspace(production.front()))
+    while(getline(prodStream, production, '|')) {
+        while(!production.empty() && isspace(production.front()))
             production.erase(production.begin());
-        while (!production.empty() && isspace(production.back()))
+        while(!production.empty() && isspace(production.back()))
             production.pop_back();
-
         Production prodTokens = split(production);
-        if (!prodTokens.empty())
+        if(!prodTokens.empty())
             grammar[nonTerminal].push_back(prodTokens);
     }
 }
 
-// Function to read a grammar from a file.
+// Read grammar from file.
 Grammar readGrammarFromFile(const string &filename) {
     Grammar grammar;
     ifstream infile(filename);
-    if (!infile.is_open()) {
+    if (!infile.is_open()){
         cerr << "Error opening file: " << filename << "\n";
         return grammar;
     }
     string line;
-    while (getline(infile, line)) {
-        if (line.empty())
+    while(getline(infile, line)) {
+        if(line.empty())
             continue;
         parseProductionLine(line, grammar);
     }
@@ -100,207 +103,292 @@ Grammar readGrammarFromFile(const string &filename) {
     return grammar;
 }
 
-// Find the longest common prefix among a list of productions.
+// --------------------------
+// Left Factoring and Left Recursion Removal
+// --------------------------
+
 Production findLongestCommonPrefix(const vector<Production>& prods) {
-    if (prods.empty())
+    if(prods.empty())
         return {};
     Production prefix = prods[0];
-    for (size_t i = 1; i < prods.size(); ++i) {
+    for(size_t i = 1; i < prods.size(); ++i) {
         Production temp;
-        for (size_t j = 0; j < min(prefix.size(), prods[i].size()); ++j) {
-            if (prefix[j] == prods[i][j])
+        for(size_t j = 0; j < min(prefix.size(), prods[i].size()); ++j) {
+            if(prefix[j] == prods[i][j])
                 temp.push_back(prefix[j]);
             else
                 break;
         }
         prefix = temp;
-        if (prefix.empty())
+        if(prefix.empty())
             break;
     }
     return prefix;
 }
 
-// Left factor productions for a given non-terminal.
 void leftFactorNonTerminal(const string &nonTerminal, Grammar &grammar) {
     ProductionList &prods = grammar[nonTerminal];
     bool factoringOccurred = false;
-
+    
     // Group productions by their first token.
     map<string, vector<Production>> groups;
-    for (auto &prod : prods) {
-        if (!prod.empty()) {
+    for(auto &prod : prods) {
+        if(!prod.empty())
             groups[prod[0]].push_back(prod);
-        }
     }
     
-    // New productions for the non-terminal after factoring.
     ProductionList newProds;
-    
-    // Process each group.
-    for (auto &groupPair : groups) {
+    for(auto &groupPair : groups) {
         vector<Production> groupProds = groupPair.second;
-        if (groupProds.size() == 1) {
+        if(groupProds.size() == 1) {
             newProds.push_back(groupProds[0]);
         } else {
             Production commonPrefix = findLongestCommonPrefix(groupProds);
-            if (commonPrefix.empty()) {
-                for (auto &p : groupProds)
+            if(commonPrefix.empty()){
+                for(auto &p : groupProds)
                     newProds.push_back(p);
             } else {
                 factoringOccurred = true;
-                // Create a new non-terminal name, e.g., A' (if nonTerminal is A).
                 string newNonTerminal = nonTerminal + "'";
+                if(find(nonTerminalOrder.begin(), nonTerminalOrder.end(), newNonTerminal) == nonTerminalOrder.end())
+                    nonTerminalOrder.push_back(newNonTerminal);
                 
-                // Production for original non-terminal: commonPrefix newNonTerminal.
                 Production newProd = commonPrefix;
                 newProd.push_back(newNonTerminal);
                 newProds.push_back(newProd);
                 
-                // For the new non-terminal, add productions that are the remainder.
                 ProductionList newNTProds;
-                for (auto &p : groupProds) {
+                for(auto &p : groupProds) {
                     Production remainder(p.begin() + commonPrefix.size(), p.end());
-                    if (remainder.empty()) {
+                    if(remainder.empty())
                         remainder.push_back("ε");
-                    }
                     newNTProds.push_back(remainder);
                 }
-                
-                if (grammar.find(newNonTerminal) != grammar.end()) {
+                if(grammar.find(newNonTerminal) != grammar.end())
                     grammar[newNonTerminal].insert(grammar[newNonTerminal].end(), newNTProds.begin(), newNTProds.end());
-                } else {
+                else
                     grammar[newNonTerminal] = newNTProds;
-                }
             }
         }
     }
-    
-    if (factoringOccurred) {
+    if(factoringOccurred)
         grammar[nonTerminal] = newProds;
-    }
 }
 
-// Perform left factoring on the entire grammar.
 void leftFactorGrammar(Grammar &grammar) {
-    vector<string> nonTerminals;
-    for (auto &pair : grammar)
-        nonTerminals.push_back(pair.first);
-    
-    for (size_t i = 0; i < nonTerminals.size(); ++i) {
-        string nt = nonTerminals[i];
-        leftFactorNonTerminal(nt, grammar);
-        for (auto &pair : grammar) {
-            if (find(nonTerminals.begin(), nonTerminals.end(), pair.first) == nonTerminals.end())
-                nonTerminals.push_back(pair.first);
-        }
+    for(size_t i = 0; i < nonTerminalOrder.size(); ++i) {
+        string nt = nonTerminalOrder[i];
+        if(grammar.find(nt) != grammar.end())
+            leftFactorNonTerminal(nt, grammar);
     }
 }
 
-// ------------------------
-// Left Recursion Removal
-// ------------------------
-
-// Remove immediate left recursion for a given non-terminal.
 void removeLeftRecursionForNonTerminal(const string &nonTerminal, Grammar &grammar) {
     ProductionList prods = grammar[nonTerminal];
-    ProductionList newProds;
-    ProductionList alpha; // Productions where left recursion occurs (A -> Aα).
-    ProductionList beta;  // Productions without left recursion (A -> β).
-
-    // Partition productions into alpha and beta.
-    for (auto &prod : prods) {
-        if (!prod.empty() && prod[0] == nonTerminal) {
-            // Production is left-recursive.
+    ProductionList newProds, alpha, beta;
+    
+    for(auto &prod : prods) {
+        if(!prod.empty() && prod[0] == nonTerminal) {
             Production remainder(prod.begin() + 1, prod.end());
             alpha.push_back(remainder);
         } else {
             beta.push_back(prod);
         }
     }
-    
-    // If no left recursion exists, nothing to do.
-    if (alpha.empty())
+    if(alpha.empty())
         return;
     
-    // Create a new non-terminal, e.g., A'.
     string newNonTerminal = nonTerminal + "'";
+    if(find(nonTerminalOrder.begin(), nonTerminalOrder.end(), newNonTerminal) == nonTerminalOrder.end())
+        nonTerminalOrder.push_back(newNonTerminal);
     
-    // For every production A -> β, replace it with A -> β newNonTerminal.
-    for (auto &prod : beta) {
+    for(auto &prod : beta) {
         Production newProd = prod;
         newProd.push_back(newNonTerminal);
         newProds.push_back(newProd);
     }
     grammar[nonTerminal] = newProds;
     
-    // For the new non-terminal, for every production A -> Aα, add A' -> α A'
     ProductionList newNTProds;
-    for (auto &prod : alpha) {
+    for(auto &prod : alpha) {
         Production newProd = prod;
         newProd.push_back(newNonTerminal);
         newNTProds.push_back(newProd);
     }
-    // Also add A' -> ε.
-    Production epsilonProd;
-    epsilonProd.push_back("ε");
+    Production epsilonProd; epsilonProd.push_back("ε");
     newNTProds.push_back(epsilonProd);
     
-    // Update the grammar with the new non-terminal.
-    if (grammar.find(newNonTerminal) != grammar.end()) {
+    if(grammar.find(newNonTerminal) != grammar.end())
         grammar[newNonTerminal].insert(grammar[newNonTerminal].end(), newNTProds.begin(), newNTProds.end());
-    } else {
+    else
         grammar[newNonTerminal] = newNTProds;
-    }
 }
 
-// Remove immediate left recursion from the entire grammar.
 void removeLeftRecursion(Grammar &grammar) {
-    vector<string> nonTerminals;
-    for (auto &pair : grammar)
-        nonTerminals.push_back(pair.first);
-    
-    for (auto &nt : nonTerminals) {
-        removeLeftRecursionForNonTerminal(nt, grammar);
+    for(size_t i = 0; i < nonTerminalOrder.size(); ++i) {
+        string nt = nonTerminalOrder[i];
+        if(grammar.find(nt) != grammar.end())
+            removeLeftRecursionForNonTerminal(nt, grammar);
     }
 }
 
-// Utility function to print the grammar.
-void printGrammar(const Grammar &grammar) {
-    for (auto &rule : grammar) {
-        cout << rule.first << " -> ";
-        bool firstProd = true;
-        for (auto &prod : rule.second) {
-            if (!firstProd)
-                cout << " | ";
-            for (auto &token : prod) {
-                cout << token << " ";
+// --------------------------
+// FIRST Set Computation (using vector to preserve order)
+// --------------------------
+
+bool contains(const vector<string>& vec, const string &s) {
+    return find(vec.begin(), vec.end(), s) != vec.end();
+}
+
+FirstSet computeFirstSets(const Grammar &grammar) {
+    FirstSet first;
+    // Initialize FIRST for each non-terminal.
+    for(auto &nt : nonTerminalOrder) {
+        if(grammar.find(nt) != grammar.end())
+            first[nt] = vector<string>();
+    }
+    
+    bool changed = true;
+    while(changed) {
+        changed = false;
+        for(auto &nt : nonTerminalOrder) {
+            if(grammar.find(nt) == grammar.end()) continue;
+            ProductionList prods = grammar.at(nt);
+            for(auto &prod : prods) {
+                // If production is epsilon.
+                if(prod.size() == 1 && prod[0] == "ε") {
+                    if(!contains(first[nt], "ε")) {
+                        first[nt].push_back("ε");
+                        changed = true;
+                    }
+                    continue;
+                }
+                bool allHaveEpsilon = true;
+                for(auto &symbol : prod) {
+                    // Terminal: not a key in grammar.
+                    if(grammar.find(symbol) == grammar.end()) {
+                        if(symbol != "ε" && !contains(first[nt], symbol)) {
+                            first[nt].push_back(symbol);
+                            changed = true;
+                        }
+                        allHaveEpsilon = false;
+                        break;
+                    } else { // symbol is non-terminal.
+                        for(auto &s : first[symbol]) {
+                            if(s != "ε" && !contains(first[nt], s)) {
+                                first[nt].push_back(s);
+                                changed = true;
+                            }
+                        }
+                        if(!contains(first[symbol], "ε")) {
+                            allHaveEpsilon = false;
+                            break;
+                        }
+                    }
+                }
+                if(allHaveEpsilon && !contains(first[nt], "ε")) {
+                    first[nt].push_back("ε");
+                    changed = true;
+                }
             }
-            firstProd = false;
+        }
+    }
+    return first;
+}
+
+// --------------------------
+// Detailed FIRST Set Printing
+// --------------------------
+
+// Helper: produce a string that represents the production alternative in detailed form.
+// If the first symbol is a terminal, output "{ token }".
+// Otherwise, join all symbols with no spaces and enclose in FIRST(...).
+string detailedAltStr(const Production &alt, const Grammar &grammar) {
+    if(alt.empty())
+        return "";
+    // Check first symbol: if terminal then show as set.
+    if(grammar.find(alt[0]) == grammar.end()) {
+        return "{ " + alt[0] + " }";
+    } else {
+        string s;
+        for(auto token : alt)
+            s += token;
+        return "FIRST(" + s + ")";
+    }
+}
+
+void printDetailedFirstSets(const Grammar &grammar, const FirstSet &first) {
+    cout << "\nFIRST setsg\n";
+    // Iterate in preserved order.
+    for(auto &nt : nonTerminalOrder) {
+        if(grammar.find(nt) == grammar.end()) continue;
+        cout << "FIRST(" << nt << ") = ";
+        ProductionList prods = grammar.at(nt);
+        // Print the production breakdown.
+        if(prods.size() == 1) {
+            cout << detailedAltStr(prods[0], grammar);
+        } else {
+            for(size_t i = 0; i < prods.size(); ++i) {
+                cout << detailedAltStr(prods[i], grammar);
+                if(i != prods.size()-1)
+                    cout << " U ";
+            }
+        }
+        cout << "\n         = { ";
+        // Print the computed FIRST set.
+        const vector<string> &vec = first.at(nt);
+        for(size_t i = 0; i < vec.size(); ++i) {
+            cout << vec[i];
+            if(i != vec.size()-1)
+                cout << ", ";
+        }
+        cout << " }\n";
+    }
+}
+
+// --------------------------
+// Utility Functions to Print Grammar
+// --------------------------
+
+void printGrammar(const Grammar &grammar) {
+    for(auto &nt : nonTerminalOrder) {
+        if(grammar.find(nt) == grammar.end()) continue;
+        cout << nt << " -> ";
+        ProductionList prods = grammar.at(nt);
+        for(size_t i = 0; i < prods.size(); ++i) {
+            for(auto &token : prods[i])
+                cout << token << " ";
+            if(i != prods.size()-1)
+                cout << "| ";
         }
         cout << "\n";
     }
 }
 
+// --------------------------
+// Main Function
+// --------------------------
+
 int main() {
-    // Change the filename if necessary.
     string filename = "grammar.txt";
-    
     Grammar grammar = readGrammarFromFile(filename);
     
     cout << "Original Grammar:\n";
     printGrammar(grammar);
     cout << "\n----------------------\n";
     
-    // Step 1: Perform left factoring.
     leftFactorGrammar(grammar);
     cout << "Grammar after Left Factoring:\n";
     printGrammar(grammar);
     cout << "\n----------------------\n";
     
-    // Step 2: Remove left recursion.
     removeLeftRecursion(grammar);
     cout << "Grammar after Left Recursion Removal:\n";
     printGrammar(grammar);
+    cout << "\n----------------------\n";
+    
+    FirstSet first = computeFirstSets(grammar);
+    printDetailedFirstSets(grammar, first);
     
     return 0;
 }
