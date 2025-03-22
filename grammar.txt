@@ -1,13 +1,7 @@
 
-
-S -> if E then S else S
-
-S -> if E then S
-
-S -> A
-
-
-E -> E + T | T
-T -> T * F | F
+E -> T E’
+E’ -> + T E’| Є
+T -> F T’
+T’ -> * F T’ | Є
 F -> ( E ) | id
 

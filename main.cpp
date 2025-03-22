@@ -12,8 +12,7 @@ using namespace std;
 typedef vector<string> Production;
 typedef vector<Production> ProductionList;
 typedef map<string, ProductionList> Grammar;
-// We will store FIRST sets as vectors (to preserve insertion order).
-typedef map<string, vector<string>> FirstSet;
+typedef map<string, vector<string>> StringVectorMap;  // For FIRST and FOLLOW sets
 
 // Global vector to preserve non-terminal order.
 vector<string> nonTerminalOrder;
@@ -233,15 +232,14 @@ void removeLeftRecursion(Grammar &grammar) {
 }
 
 // --------------------------
-// FIRST Set Computation (using vector to preserve order)
+// FIRST Set Computation (already defined)
 // --------------------------
-
 bool contains(const vector<string>& vec, const string &s) {
     return find(vec.begin(), vec.end(), s) != vec.end();
 }
 
-FirstSet computeFirstSets(const Grammar &grammar) {
-    FirstSet first;
+StringVectorMap computeFirstSets(const Grammar &grammar) {
+    StringVectorMap first;
     // Initialize FIRST for each non-terminal.
     for(auto &nt : nonTerminalOrder) {
         if(grammar.find(nt) != grammar.end())
@@ -255,7 +253,6 @@ FirstSet computeFirstSets(const Grammar &grammar) {
             if(grammar.find(nt) == grammar.end()) continue;
             ProductionList prods = grammar.at(nt);
             for(auto &prod : prods) {
-                // If production is epsilon.
                 if(prod.size() == 1 && prod[0] == "ε") {
                     if(!contains(first[nt], "ε")) {
                         first[nt].push_back("ε");
@@ -273,7 +270,7 @@ FirstSet computeFirstSets(const Grammar &grammar) {
                         }
                         allHaveEpsilon = false;
                         break;
-                    } else { // symbol is non-terminal.
+                    } else {
                         for(auto &s : first[symbol]) {
                             if(s != "ε" && !contains(first[nt], s)) {
                                 first[nt].push_back(s);
@@ -297,57 +294,101 @@ FirstSet computeFirstSets(const Grammar &grammar) {
 }
 
 // --------------------------
-// Detailed FIRST Set Printing
+// FOLLOW Set Computation
 // --------------------------
-
-// Helper: produce a string that represents the production alternative in detailed form.
-// If the first symbol is a terminal, output "{ token }".
-// Otherwise, join all symbols with no spaces and enclose in FIRST(...).
-string detailedAltStr(const Production &alt, const Grammar &grammar) {
-    if(alt.empty())
-        return "";
-    // Check first symbol: if terminal then show as set.
-    if(grammar.find(alt[0]) == grammar.end()) {
-        return "{ " + alt[0] + " }";
-    } else {
-        string s;
-        for(auto token : alt)
-            s += token;
-        return "FIRST(" + s + ")";
-    }
-}
-
-void printDetailedFirstSets(const Grammar &grammar, const FirstSet &first) {
-    cout << "\nFIRST setsg\n";
-    // Iterate in preserved order.
+//
+// The FOLLOW set of a non-terminal A is the set of terminals that can appear immediately to the right of A.
+// Algorithm:
+// 1. Place "$" (end-of-input marker) in FOLLOW(S) where S is the start symbol.
+// 2. For each production A -> αBβ, add FIRST(β) (except for epsilon) to FOLLOW(B).
+// 3. If FIRST(β) contains epsilon (or β is empty), add FOLLOW(A) to FOLLOW(B).
+// 4. Iterate until no changes occur.
+//
+StringVectorMap computeFollowSets(const Grammar &grammar, const StringVectorMap &first) {
+    StringVectorMap follow;
+    // Initialize FOLLOW sets for each non-terminal.
     for(auto &nt : nonTerminalOrder) {
-        if(grammar.find(nt) == grammar.end()) continue;
-        cout << "FIRST(" << nt << ") = ";
-        ProductionList prods = grammar.at(nt);
-        // Print the production breakdown.
-        if(prods.size() == 1) {
-            cout << detailedAltStr(prods[0], grammar);
-        } else {
-            for(size_t i = 0; i < prods.size(); ++i) {
-                cout << detailedAltStr(prods[i], grammar);
-                if(i != prods.size()-1)
-                    cout << " U ";
+        if(grammar.find(nt) != grammar.end())
+            follow[nt] = vector<string>();
+    }
+    // Assume the first non-terminal is the start symbol; add "$" to its FOLLOW set.
+    if(!nonTerminalOrder.empty() && follow.find(nonTerminalOrder[0]) != follow.end()){
+        follow[nonTerminalOrder[0]].push_back("$");
+    }
+    
+    bool changed = true;
+    while(changed) {
+        changed = false;
+        // For each production A -> α.
+        for(auto &A : nonTerminalOrder) {
+            if(grammar.find(A) == grammar.end()) continue;
+            ProductionList prods = grammar.at(A);
+            for(auto &prod : prods) {
+                // For each symbol in the production.
+                for(size_t i = 0; i < prod.size(); ++i) {
+                    string B = prod[i];
+                    // Only process non-terminals.
+                    if(grammar.find(B) == grammar.end())
+                        continue;
+                    // Let beta be the rest of the production after B.
+                    vector<string> beta(prod.begin() + i + 1, prod.end());
+                    vector<string> firstBeta;
+                    // Compute FIRST(beta):
+                    if(beta.empty()){
+                        // If beta is empty, then add FOLLOW(A) to FOLLOW(B).
+                        for(auto &sym : follow[A]) {
+                            if(!contains(follow[B], sym)){
+                                follow[B].push_back(sym);
+                                changed = true;
+                            }
+                        }
+                    } else {
+                        bool betaDerivesEpsilon = true;
+                        for(auto &symbol : beta) {
+                            // If symbol is terminal:
+                            if(grammar.find(symbol) == grammar.end()){
+                                if(symbol != "ε" && !contains(firstBeta, symbol))
+                                    firstBeta.push_back(symbol);
+                                betaDerivesEpsilon = false;
+                                break;
+                            } else {
+                                // symbol is non-terminal; add its FIRST (except epsilon)
+                                for(auto &s : first.at(symbol)) {
+                                    if(s != "ε" && !contains(firstBeta, s))
+                                        firstBeta.push_back(s);
+                                }
+                                if(!contains(first.at(symbol), "ε")){
+                                    betaDerivesEpsilon = false;
+                                    break;
+                                }
+                            }
+                        }
+                        // Add FIRST(beta) (without epsilon) to FOLLOW(B).
+                        for(auto &sym : firstBeta) {
+                            if(!contains(follow[B], sym)){
+                                follow[B].push_back(sym);
+                                changed = true;
+                            }
+                        }
+                        // If beta derives epsilon, add FOLLOW(A) to FOLLOW(B).
+                        if(betaDerivesEpsilon){
+                            for(auto &sym : follow[A]) {
+                                if(!contains(follow[B], sym)){
+                                    follow[B].push_back(sym);
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
-        cout << "\n         = { ";
-        // Print the computed FIRST set.
-        const vector<string> &vec = first.at(nt);
-        for(size_t i = 0; i < vec.size(); ++i) {
-            cout << vec[i];
-            if(i != vec.size()-1)
-                cout << ", ";
-        }
-        cout << " }\n";
     }
+    return follow;
 }
 
 // --------------------------
-// Utility Functions to Print Grammar
+// Printing Functions
 // --------------------------
 
 void printGrammar(const Grammar &grammar) {
@@ -362,6 +403,74 @@ void printGrammar(const Grammar &grammar) {
                 cout << "| ";
         }
         cout << "\n";
+    }
+}
+
+void printFirstSets(const StringVectorMap &first) {
+    cout << "\nFIRST Sets:\n";
+    for(auto &nt : nonTerminalOrder) {
+        if(first.find(nt) == first.end()) continue;
+        cout << "FIRST(" << nt << ") = { ";
+        for(size_t i = 0; i < first.at(nt).size(); ++i) {
+            cout << first.at(nt)[i];
+            if(i != first.at(nt).size()-1)
+                cout << ", ";
+        }
+        cout << " }\n";
+    }
+}
+
+void printFollowSets(const StringVectorMap &follow) {
+    cout << "\nFOLLOW Sets:\n";
+    for(auto &nt : nonTerminalOrder) {
+        if(follow.find(nt) == follow.end()) continue;
+        cout << "FOLLOW(" << nt << ") = { ";
+        for(size_t i = 0; i < follow.at(nt).size(); ++i) {
+            cout << follow.at(nt)[i];
+            if(i != follow.at(nt).size()-1)
+                cout << ", ";
+        }
+        cout << " }\n";
+    }
+}
+
+// Detailed printing for FIRST sets as per previous format.
+string detailedAltStr(const Production &alt, const Grammar &grammar) {
+    if(alt.empty())
+        return "";
+    if(grammar.find(alt[0]) == grammar.end()) {
+        return "{ " + alt[0] + " }";
+    } else {
+        string s;
+        for(auto token : alt)
+            s += token;
+        return "FIRST(" + s + ")";
+    }
+}
+
+void printDetailedFirstSets(const Grammar &grammar, const StringVectorMap &first) {
+    cout << "\nFIRST setsg\n";
+    for(auto &nt : nonTerminalOrder) {
+        if(grammar.find(nt) == grammar.end()) continue;
+        cout << "FIRST(" << nt << ") = ";
+        ProductionList prods = grammar.at(nt);
+        if(prods.size() == 1) {
+            cout << detailedAltStr(prods[0], grammar);
+        } else {
+            for(size_t i = 0; i < prods.size(); ++i) {
+                cout << detailedAltStr(prods[i], grammar);
+                if(i != prods.size()-1)
+                    cout << " U ";
+            }
+        }
+        cout << "\n         = { ";
+        const vector<string> &vec = first.at(nt);
+        for(size_t i = 0; i < vec.size(); ++i) {
+            cout << vec[i];
+            if(i != vec.size()-1)
+                cout << ", ";
+        }
+        cout << " }\n";
     }
 }
 
@@ -387,8 +496,12 @@ int main() {
     printGrammar(grammar);
     cout << "\n----------------------\n";
     
-    FirstSet first = computeFirstSets(grammar);
+    StringVectorMap first = computeFirstSets(grammar);
     printDetailedFirstSets(grammar, first);
+    
+    // Compute and print FOLLOW sets.
+    StringVectorMap follow = computeFollowSets(grammar, first);
+    printFollowSets(follow);
     
     return 0;
 }
