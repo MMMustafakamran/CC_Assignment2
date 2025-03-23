@@ -1,3 +1,5 @@
+//i22-1013 Mustafa Kamran, i22-0855 Malaika Afzal
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -6,7 +8,7 @@
 #include <string>
 #include <iostream>
 #include <unordered_map>
-#include <iomanip>   //for setw and such
+#include <iomanip>   
 
 using namespace std;
 
