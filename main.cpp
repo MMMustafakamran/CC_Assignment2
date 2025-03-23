@@ -4,18 +4,17 @@
 #include <cctype>
 #include <set>
 #include <string>
-#include <vector>
-#include <algorithm>
 #include <iostream>
-#include <iomanip>
+#include <unordered_map>
+
+using namespace std;
 
 // ------------------------------------------------------------------
 // Constants
 // ------------------------------------------------------------------
-#define MAX_NONTERMINALS 52    // 26 letters + 26 for prime
-#define MAX_PRODUCTIONS 10      // maximum productions per nonterminal
-#define MAX_PROD_LENGTH 100     // maximum length of a production string
-#define MAX_TERM 128            // maximum terminal ASCII codes for parse table
+#define MAX_NONTERMINALS 52    // 26 letters for normal and 26 for prime versions
+#define MAX_PRODUCTIONS 10     // maximum productions per nonterminal
+#define MAX_PROD_LENGTH 100    // maximum length of a production string
 
 // ------------------------------------------------------------------
 // GrammarProduction structure:
@@ -28,15 +27,17 @@ struct GrammarProduction {
 };
 
 GrammarProduction grammar[MAX_NONTERMINALS];
-bool primeMark[MAX_NONTERMINALS];    // true if e.g. E'
-int grammarCount = 0;                // number of grammar entries
+int grammarCount = 0;  // number of grammar entries
 
 // FIRST and FOLLOW sets stored in 52 slots.
-std::set<std::string> firstSets[MAX_NONTERMINALS];
-std::set<std::string> followSets[MAX_NONTERMINALS];
+set<string> firstSets[MAX_NONTERMINALS];
+set<string> followSets[MAX_NONTERMINALS];
 
-// LL(1) parsing table: for each nonterminal index (0..51) and terminal (ASCII)
-char parseTable[MAX_NONTERMINALS][MAX_TERM][MAX_PROD_LENGTH];
+// LL(1) parsing table: an unordered_map for each nonterminal index keyed by terminal string.
+unordered_map<string, string> parseTable[MAX_NONTERMINALS];
+
+// primeMark array: if true then this grammar entry is a prime version (e.g., E').
+bool primeMark[MAX_NONTERMINALS];
 
 // ------------------------------------------------------------------
 // Helper: Map a nonterminal letter and its prime flag to an index [0..51].
@@ -54,25 +55,10 @@ int getNonTerminalIndex(char c, bool isPrime) {
 // Otherwise, return -1 (indicating a terminal).
 // ------------------------------------------------------------------
 int symbolIndex(const char *sym) {
-    if (!std::isupper((unsigned char)sym[0])) return -1; // terminal
-    if (std::strlen(sym) > 1 && sym[1] == '\'')
+    if (!isupper((unsigned char)sym[0])) return -1; // terminal
+    if (strlen(sym) > 1 && sym[1] == '\'')
         return getNonTerminalIndex(sym[0], true);
     return getNonTerminalIndex(sym[0], false);
-}
-
-// ------------------------------------------------------------------
-// Trim whitespace from a C-string (in place).
-// ------------------------------------------------------------------
-void trim(char *str) {
-    int i = 0, j = 0;
-    while (str[i] && std::isspace((unsigned char)str[i])) i++;
-    while (str[i]) {
-        str[j++] = str[i++];
-    }
-    str[j] = '\0';
-    for (i = j - 1; i >= 0 && std::isspace((unsigned char)str[i]); i--) {
-        str[i] = '\0';
-    }
 }
 
 // ------------------------------------------------------------------
@@ -81,23 +67,131 @@ void trim(char *str) {
 // ------------------------------------------------------------------
 void printNonTerminal(int idx) {
     if (primeMark[idx])
-        std::printf("%c'", grammar[idx].nonTerminal);
+        printf("%c'", grammar[idx].nonTerminal);
     else
-        std::printf("%c", grammar[idx].nonTerminal);
+        printf("%c", grammar[idx].nonTerminal);
+}
+
+// ------------------------------------------------------------------
+// Trim whitespace from a C-string (in place).
+// ------------------------------------------------------------------
+void trim(char *str) {
+    int i = 0, j = 0;
+    while (str[i] && isspace((unsigned char)str[i])) i++;
+    while (str[i]) {
+        str[j++] = str[i++];
+    }
+    str[j] = '\0';
+    for (i = j - 1; i >= 0 && isspace((unsigned char)str[i]); i--) {
+        str[i] = '\0';
+    }
+}
+
+// ------------------------------------------------------------------
+// Helper: Search for an existing grammar entry for nonterminal 'nt' with the given prime flag.
+// ------------------------------------------------------------------
+int findNonTerminalEntry(char nt, bool isPrime) {
+    for (int i = 0; i < grammarCount; i++) {
+        if (grammar[i].nonTerminal == nt && primeMark[i] == isPrime) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// ------------------------------------------------------------------
+// Read grammar from file "grammar.txt"
+// Each line should be of the form:
+//    S -> if E then S, else S
+//    S -> if E then S
+//    S -> A
+//
+// This version merges productions for the same nonterminal.
+// ------------------------------------------------------------------
+void readGrammar(const char *filename) {
+    FILE *fp = fopen(filename, "r");
+    if (!fp) {
+        printf("Error opening file %s\n", filename);
+        exit(1);
+    }
+    char line[256];
+    while (fgets(line, sizeof(line), fp)) {
+        if (strlen(line) <= 1)
+            continue;
+        char *arrow = strstr(line, "->");
+        if (!arrow)
+            continue;
+
+        // Extract LHS and trim.
+        char lhs[10];
+        strncpy(lhs, line, arrow - line);
+        lhs[arrow - line] = '\0';
+        trim(lhs);
+        if (strlen(lhs) == 0)
+            continue;
+        char nt = lhs[0];
+        bool isPrime = (strlen(lhs) > 1 && lhs[1] == '\'');
+
+        // Check if this nonterminal already exists.
+        int idx = findNonTerminalEntry(nt, isPrime);
+        if (idx == -1) {
+            // Create a new grammar entry if not found.
+            idx = grammarCount;
+            grammar[idx].nonTerminal = nt;
+            grammar[idx].prodCount = 0;
+            primeMark[idx] = isPrime;
+            grammarCount++;
+        }
+        
+        // Process RHS productions (separated by '|')
+        char *rhs = arrow + 2;
+        char *token = strtok(rhs, "|");
+        while (token != NULL) {
+            trim(token);
+            if (grammar[idx].prodCount < MAX_PRODUCTIONS) {
+                strcpy(grammar[idx].productions[grammar[idx].prodCount++], token);
+            }
+            token = strtok(NULL, "|");
+        }
+    }
+    fclose(fp);
+}
+
+// ------------------------------------------------------------------
+// Print the current grammar.
+// ------------------------------------------------------------------
+void printGrammar() {
+    printf("Grammar:\n");
+    for (int i = 0; i < grammarCount; i++) {
+        if (grammar[i].prodCount > 0) {
+            printNonTerminal(i);
+            printf(" -> ");
+            for (int j = 0; j < grammar[i].prodCount; j++) {
+                printf("%s", grammar[i].productions[j]);
+                if (j != grammar[i].prodCount - 1)
+                    printf(" | ");
+            }
+            printf("\n");
+        }
+    }
 }
 
 // ------------------------------------------------------------------
 // Helper: Parse the next symbol from a production string.
 // It detects if an uppercase letter is immediately followed by a prime marker.
+// For terminals starting with a lowercase letter or a digit, it reads the full token (alphanumeric).
 // Writes the symbol into outSym and advances pos.
 // Returns false if end-of-string is reached.
 // ------------------------------------------------------------------
 bool nextSymbol(const char *prod, int &pos, char *outSym) {
-    while (prod[pos] && std::isspace((unsigned char)prod[pos])) pos++;
+    // Skip whitespace
+    while (prod[pos] && isspace((unsigned char)prod[pos]))
+        pos++;
     if (!prod[pos])
         return false;
     
-    if (std::isupper((unsigned char)prod[pos])) {
+    // Nonterminal: Uppercase letter, possibly followed by an apostrophe.
+    if (isupper((unsigned char)prod[pos])) {
         outSym[0] = prod[pos];
         if (prod[pos+1] == '\'') {
             outSym[1] = '\'';
@@ -107,205 +201,156 @@ bool nextSymbol(const char *prod, int &pos, char *outSym) {
             outSym[1] = '\0';
             pos++;
         }
-    } else {
+        return true;
+    }
+    // Terminal: For alphanumeric tokens (like "id"), read the full token.
+    else if (isalnum((unsigned char)prod[pos])) {
+        int start = pos;
+        while (prod[pos] && isalnum((unsigned char)prod[pos])) {
+            pos++;
+        }
+        int len = pos - start;
+        strncpy(outSym, prod + start, len);
+        outSym[len] = '\0';
+        return true;
+    }
+    // Other terminal symbols (like punctuation), read one character.
+    else {
         outSym[0] = prod[pos];
         outSym[1] = '\0';
         pos++;
-    }
-    return true;
-}
-
-// ------------------------------------------------------------------
-// Read grammar from file "grammar.txt"
-// Each line should be of the form:
-//    E -> T E'
-//    E' -> + T E' | ε
-// ------------------------------------------------------------------
-void readGrammar(const char *filename) {
-    FILE *fp = std::fopen(filename, "r");
-    if (!fp) {
-        std::printf("Error opening file %s\n", filename);
-        std::exit(1);
-    }
-    char line[256];
-    while (std::fgets(line, sizeof(line), fp)) {
-        if (std::strlen(line) <= 1)
-            continue;
-        char *arrow = std::strstr(line, "->");
-        if (!arrow)
-            continue;
-
-        char lhs[10];
-        std::strncpy(lhs, line, arrow - line);
-        lhs[arrow - line] = '\0';
-        trim(lhs);
-        if (std::strlen(lhs) == 0)
-            continue;
-        char nt = lhs[0];
-        bool isPrime = false;
-        if (std::strlen(lhs) > 1 && lhs[1] == '\'')
-            isPrime = true;
-
-        int idx = grammarCount;
-        grammar[idx].nonTerminal = nt;
-        grammar[idx].prodCount = 0;
-        primeMark[idx] = isPrime;
-        grammarCount++;
-
-        char *rhs = arrow + 2;
-        char *token = std::strtok(rhs, "|");
-        while (token != NULL) {
-            trim(token);
-            if (grammar[idx].prodCount < MAX_PRODUCTIONS) {
-                std::strcpy(grammar[idx].productions[grammar[idx].prodCount++], token);
-            }
-            token = std::strtok(NULL, "|");
-        }
-    }
-    std::fclose(fp);
-}
-
-// ------------------------------------------------------------------
-// Print the current grammar.
-// ------------------------------------------------------------------
-void printGrammar() {
-    for (int i = 0; i < grammarCount; i++) {
-        if (grammar[i].prodCount > 0) {
-            printNonTerminal(i);
-            std::printf(" -> ");
-            for (int j = 0; j < grammar[i].prodCount; j++) {
-                std::printf("%s", grammar[i].productions[j]);
-                if (j != grammar[i].prodCount - 1)
-                    std::printf(" | ");
-            }
-            std::printf("\n");
-        }
+        return true;
     }
 }
 
 // ------------------------------------------------------------------
 // LEFT FACTORING
+//
+// For each grammar entry, if two or more productions share a common prefix,
+// factor them out by creating a new prime nonterminal (e.g., E').
 // ------------------------------------------------------------------
 void leftFactoring() {
-    bool repeat = true;
-    while (repeat) {
-        repeat = false;
-        for (int i = 0; i < grammarCount; i++) {
-            char A = grammar[i].nonTerminal;
-            bool factored = false;
-            for (int j = 0; j < grammar[i].prodCount; j++) {
-                char firstSym = grammar[i].productions[j][0];
-                int count = 0;
-                for (int k = 0; k < grammar[i].prodCount; k++) {
-                    if (grammar[i].productions[k][0] == firstSym)
-                        count++;
-                }
-                if (count > 1) {
-                    char commonPrefix[MAX_PROD_LENGTH];
-                    std::strcpy(commonPrefix, grammar[i].productions[j]);
-                    for (int k = j+1; k < grammar[i].prodCount; k++) {
-                        if (grammar[i].productions[k][0] == firstSym) {
-                            int idx = 0;
-                            while (commonPrefix[idx] && grammar[i].productions[k][idx] &&
-                                   commonPrefix[idx] == grammar[i].productions[k][idx])
-                                idx++;
-                            commonPrefix[idx] = '\0';
-                        }
-                    }
-                    int prefixLen = (int)std::strlen(commonPrefix);
-                    if (prefixLen > 0) {
-                        factored = true;
-                        char APrime[5];
-                        std::sprintf(APrime, "%c'", A);
-                        char newProds[MAX_PRODUCTIONS][MAX_PROD_LENGTH];
-                        int newCount = 0;
-                        char newProdsAPrime[MAX_PRODUCTIONS][MAX_PROD_LENGTH];
-                        int newCountAPrime = 0;
-                        for (int k = 0; k < grammar[i].prodCount; k++) {
-                            if (std::strncmp(grammar[i].productions[k], commonPrefix, prefixLen) == 0) {
-                                char remainder[MAX_PROD_LENGTH];
-                                std::strcpy(remainder, grammar[i].productions[k] + prefixLen);
-                                if (std::strlen(remainder) == 0)
-                                    std::strcpy(remainder, "ε");
-                                std::strcpy(newProdsAPrime[newCountAPrime++], remainder);
-                            } else {
-                                std::strcpy(newProds[newCount++], grammar[i].productions[k]);
-                            }
-                        }
-                        char factoredProd[MAX_PROD_LENGTH];
-                        // Limit commonPrefix so that commonPrefix + APrime fits in MAX_PROD_LENGTH
-                        int avail = MAX_PROD_LENGTH - 1 - (int)std::strlen(APrime);
-                        std::snprintf(factoredProd, MAX_PROD_LENGTH, "%.*s%s", avail, commonPrefix, APrime);
-                        std::strcpy(newProds[newCount++], factoredProd);
-                        grammar[i].prodCount = newCount;
-                        for (int k = 0; k < newCount; k++) {
-                            std::strcpy(grammar[i].productions[k], newProds[k]);
-                        }
-                        // Create new grammar entry for A'
-                        int newIdx = grammarCount;
-                        grammar[newIdx].nonTerminal = A; // same letter
-                        primeMark[newIdx] = true;
-                        grammar[newIdx].prodCount = 0;
-                        for (int k = 0; k < newCountAPrime; k++) {
-                            std::strcpy(grammar[newIdx].productions[grammar[newIdx].prodCount++], newProdsAPrime[k]);
-                        }
-                        grammarCount++;
-                        break;
-                    }
-                }
+    for (int i = 0; i < grammarCount; i++) {
+        char A = grammar[i].nonTerminal;
+        bool factored = false;
+        for (int j = 0; j < grammar[i].prodCount; j++) {
+            char firstSym = grammar[i].productions[j][0];
+            int count = 0;
+            for (int k = 0; k < grammar[i].prodCount; k++) {
+                if (grammar[i].productions[k][0] == firstSym)
+                    count++;
             }
-            if (factored) {
-                repeat = true;
-                break; // re-check from start
+            if (count > 1) {
+                char commonPrefix[MAX_PROD_LENGTH];
+                strcpy(commonPrefix, grammar[i].productions[j]);
+                for (int k = j+1; k < grammar[i].prodCount; k++) {
+                    if (grammar[i].productions[k][0] == firstSym) {
+                        int idx = 0;
+                        while (commonPrefix[idx] && grammar[i].productions[k][idx] &&
+                               commonPrefix[idx] == grammar[i].productions[k][idx])
+                            idx++;
+                        commonPrefix[idx] = '\0';
+                    }
+                }
+                int prefixLen = strlen(commonPrefix);
+                if (prefixLen > 0) {
+                    factored = true;
+                    char APrime[5];
+                    sprintf(APrime, "%c'", A);
+                    char newProds[MAX_PRODUCTIONS][MAX_PROD_LENGTH];
+                    int newCount = 0;
+                    char newProdsAPrime[MAX_PRODUCTIONS][MAX_PROD_LENGTH];
+                    int newCountAPrime = 0;
+                    for (int k = 0; k < grammar[i].prodCount; k++) {
+                        if (strncmp(grammar[i].productions[k], commonPrefix, prefixLen) == 0) {
+                            char remainder[MAX_PROD_LENGTH];
+                            strcpy(remainder, grammar[i].productions[k] + prefixLen);
+                            if (strlen(remainder) == 0)
+                                strcpy(remainder, "ε");
+                            strcpy(newProdsAPrime[newCountAPrime++], remainder);
+                        } else {
+                            strcpy(newProds[newCount++], grammar[i].productions[k]);
+                        }
+                    }
+                    // Use a larger temporary buffer to avoid truncation.
+                    char factoredProd[MAX_PROD_LENGTH * 2];
+                    snprintf(factoredProd, MAX_PROD_LENGTH * 2, "%s%s", commonPrefix, APrime);
+                    strcpy(newProds[newCount++], factoredProd);
+                    grammar[i].prodCount = newCount;
+                    for (int k = 0; k < newCount; k++) {
+                        strcpy(grammar[i].productions[k], newProds[k]);
+                    }
+                    // Create a new grammar entry for A'
+                    int newIdx = grammarCount;
+                    grammar[newIdx].nonTerminal = A; // same letter
+                    primeMark[newIdx] = true;        // mark as prime (A')
+                    grammar[newIdx].prodCount = 0;
+                    for (int k = 0; k < newCountAPrime; k++) {
+                        strcpy(grammar[newIdx].productions[grammar[newIdx].prodCount++], newProdsAPrime[k]);
+                    }
+                    grammarCount++;
+                    break;
+                }
             }
         }
+        if (factored)
+            i--; // Re-check this nonterminal if further factoring is possible.
     }
 }
 
 // ------------------------------------------------------------------
-// REMOVE LEFT RECURSION
+// LEFT RECURSION REMOVAL
+//
+// For grammar entry A, partition productions into left-recursive and non-recursive,
+// then rewrite as:
+//    A -> nonRecProd A'
+//    A' -> recProd A' | ε
 // ------------------------------------------------------------------
 void removeLeftRecursionFor(int idx) {
     char nt = grammar[idx].nonTerminal;
     char ntPrime[5];
-    std::sprintf(ntPrime, "%c'", nt);
+    sprintf(ntPrime, "%c'", nt);
+
     char nonRecProds[MAX_PRODUCTIONS][MAX_PROD_LENGTH];
     int nonRecCount = 0;
     char recProds[MAX_PRODUCTIONS][MAX_PROD_LENGTH];
     int recCount = 0;
+    
     for (int i = 0; i < grammar[idx].prodCount; i++) {
         char *prod = grammar[idx].productions[i];
         if (prod[0] == nt) {
-            if (std::strlen(prod) > 1)
-                std::strcpy(recProds[recCount++], prod + 1);
+            if (strlen(prod) > 1)
+                strcpy(recProds[recCount++], prod + 1);
             else
-                std::strcpy(recProds[recCount++], "");
+                strcpy(recProds[recCount++], "");
         } else {
-            std::strcpy(nonRecProds[nonRecCount++], prod);
+            strcpy(nonRecProds[nonRecCount++], prod);
         }
     }
+    
     if (recCount > 0) {
         for (int i = 0; i < nonRecCount; i++) {
-            char temp[MAX_PROD_LENGTH];
-            int avail = MAX_PROD_LENGTH - 1 - (int)std::strlen(ntPrime);
-            std::snprintf(temp, MAX_PROD_LENGTH, "%.*s%s", avail, nonRecProds[i], ntPrime);
-            std::strcpy(nonRecProds[i], temp);
+            // Use an enlarged temporary buffer to avoid truncation.
+            char temp[MAX_PROD_LENGTH * 2];
+            snprintf(temp, MAX_PROD_LENGTH * 2, "%s%s", nonRecProds[i], ntPrime);
+            strcpy(nonRecProds[i], temp);
+        }
+        for (int i = 0; i < nonRecCount; i++) {
+            strcpy(grammar[idx].productions[i], nonRecProds[i]);
         }
         grammar[idx].prodCount = nonRecCount;
-        for (int i = 0; i < nonRecCount; i++) {
-            std::strcpy(grammar[idx].productions[i], nonRecProds[i]);
-        }
+        
+        // Create new entry for A'
         int newIdx = grammarCount;
-        grammar[newIdx].nonTerminal = nt;
-        primeMark[newIdx] = true;
+        grammar[newIdx].nonTerminal = nt;  // same letter
+        primeMark[newIdx] = true;          // mark as prime
         grammar[newIdx].prodCount = 0;
         for (int i = 0; i < recCount; i++) {
-            char temp[MAX_PROD_LENGTH];
-            int avail = MAX_PROD_LENGTH - 1 - (int)std::strlen(ntPrime);
-            std::snprintf(temp, MAX_PROD_LENGTH, "%.*s%s", avail, recProds[i], ntPrime);
-            std::strcpy(grammar[newIdx].productions[grammar[newIdx].prodCount++], temp);
+            char temp[MAX_PROD_LENGTH * 2];
+            snprintf(temp, MAX_PROD_LENGTH * 2, "%s%s", recProds[i], ntPrime);
+            strcpy(grammar[newIdx].productions[grammar[newIdx].prodCount++], temp);
         }
-        std::strcpy(grammar[newIdx].productions[grammar[newIdx].prodCount++], "ε");
+        strcpy(grammar[newIdx].productions[grammar[newIdx].prodCount++], "ε");
         grammarCount++;
     }
 }
@@ -318,7 +363,7 @@ void removeLeftRecursion() {
 }
 
 // ------------------------------------------------------------------
-// COMPUTE FIRST SETS
+// Compute FIRST sets for each grammar entry.
 // ------------------------------------------------------------------
 void computeFirst() {
     bool changed = true;
@@ -328,22 +373,21 @@ void computeFirst() {
             int Aidx = getNonTerminalIndex(grammar[i].nonTerminal, primeMark[i]);
             for (int j = 0; j < grammar[i].prodCount; j++) {
                 char *prod = grammar[i].productions[j];
-                if (std::strcmp(prod, "ε") == 0) {
-                    if (firstSets[Aidx].insert("ε").second) {
+                if (strcmp(prod, "ε") == 0) {
+                    if (firstSets[Aidx].insert("ε").second)
                         changed = true;
-                    }
                     continue;
                 }
                 bool allEpsilon = true;
                 int pos = 0;
                 while (true) {
                     char symbol[10];
-                    if (!nextSymbol(prod, pos, symbol)) break;
+                    if (!nextSymbol(prod, pos, symbol))
+                        break;
                     int Bidx = symbolIndex(symbol);
                     if (Bidx < 0) {
-                        if (firstSets[Aidx].insert(symbol).second) {
+                        if (firstSets[Aidx].insert(string(symbol)).second)
                             changed = true;
-                        }
                         allEpsilon = false;
                         break;
                     } else {
@@ -352,9 +396,8 @@ void computeFirst() {
                             if (s == "ε")
                                 hasEpsilon = true;
                             else {
-                                if (firstSets[Aidx].insert(s).second) {
+                                if (firstSets[Aidx].insert(s).second)
                                     changed = true;
-                                }
                             }
                         }
                         if (!hasEpsilon) {
@@ -364,9 +407,8 @@ void computeFirst() {
                     }
                 }
                 if (allEpsilon) {
-                    if (firstSets[Aidx].insert("ε").second) {
+                    if (firstSets[Aidx].insert("ε").second)
                         changed = true;
-                    }
                 }
             }
         }
@@ -374,7 +416,7 @@ void computeFirst() {
 }
 
 // ------------------------------------------------------------------
-// COMPUTE FOLLOW SETS
+// Compute FOLLOW sets for each grammar entry.
 // ------------------------------------------------------------------
 void computeFollow() {
     if (grammarCount > 0) {
@@ -388,36 +430,34 @@ void computeFollow() {
             int Aidx = getNonTerminalIndex(grammar[i].nonTerminal, primeMark[i]);
             for (int j = 0; j < grammar[i].prodCount; j++) {
                 char *prod = grammar[i].productions[j];
+                int pos = 0;
+                // Collect symbols from the production.
                 char symbols[50][10];
                 int symCount = 0;
                 int tempPos = 0;
-                while (true) {
-                    char s[10];
-                    if (!nextSymbol(prod, tempPos, s)) break;
-                    std::strcpy(symbols[symCount++], s);
+                while (nextSymbol(prod, tempPos, symbols[symCount])) {
+                    symCount++;
                 }
                 for (int k = 0; k < symCount; k++) {
                     int Bidx = symbolIndex(symbols[k]);
                     if (Bidx < 0)
                         continue;
                     bool allEpsilon = true;
-                    for (int x = k+1; x < symCount; x++) {
-                        int nxt = symbolIndex(symbols[x]);
-                        if (nxt < 0) {
-                            if (followSets[Bidx].insert(symbols[x]).second) {
+                    for (int x = k + 1; x < symCount; x++) {
+                        int nextIdx = symbolIndex(symbols[x]);
+                        if (nextIdx < 0) {
+                            if (followSets[Bidx].insert(string(symbols[x])).second)
                                 changed = true;
-                            }
                             allEpsilon = false;
                             break;
                         } else {
                             bool hasEps = false;
-                            for (auto &fs : firstSets[nxt]) {
+                            for (auto &fs : firstSets[nextIdx]) {
                                 if (fs == "ε")
                                     hasEps = true;
                                 else {
-                                    if (followSets[Bidx].insert(fs).second) {
+                                    if (followSets[Bidx].insert(fs).second)
                                         changed = true;
-                                    }
                                 }
                             }
                             if (!hasEps) {
@@ -428,9 +468,8 @@ void computeFollow() {
                     }
                     if (allEpsilon) {
                         for (auto &fa : followSets[Aidx]) {
-                            if (followSets[Bidx].insert(fa).second) {
+                            if (followSets[Bidx].insert(fa).second)
                                 changed = true;
-                            }
                         }
                     }
                 }
@@ -440,30 +479,31 @@ void computeFollow() {
 }
 
 // ------------------------------------------------------------------
-// BUILD LL(1) PARSE TABLE
+// Build the LL(1) Parsing Table.
 // ------------------------------------------------------------------
 void buildParseTable() {
+    // Clear the parse table.
     for (int i = 0; i < MAX_NONTERMINALS; i++) {
-        for (int j = 0; j < MAX_TERM; j++) {
-            parseTable[i][j][0] = '\0';
-        }
+        parseTable[i].clear();
     }
     for (int i = 0; i < grammarCount; i++) {
         int Aidx = getNonTerminalIndex(grammar[i].nonTerminal, primeMark[i]);
         for (int j = 0; j < grammar[i].prodCount; j++) {
             char *prod = grammar[i].productions[j];
-            std::set<std::string> firstProd;
-            bool allEps = true;
+            set<string> firstProd;
             int pos = 0;
-            if (std::strcmp(prod, "ε") == 0) {
+            if (strcmp(prod, "ε") == 0) {
                 firstProd.insert("ε");
             } else {
+                bool allEps = true;
+                int pos2 = 0;
                 while (true) {
                     char sym[10];
-                    if (!nextSymbol(prod, pos, sym)) break;
+                    if (!nextSymbol(prod, pos2, sym))
+                        break;
                     int idxSym = symbolIndex(sym);
                     if (idxSym < 0) {
-                        firstProd.insert(std::string(sym));
+                        firstProd.insert(string(sym));
                         allEps = false;
                         break;
                     } else {
@@ -480,20 +520,22 @@ void buildParseTable() {
                         }
                     }
                 }
-                if (allEps) {
+                if (allEps)
                     firstProd.insert("ε");
-                }
             }
+            // For each terminal in FIRST(prod) except ε, add production.
             for (auto &term : firstProd) {
                 if (term != "ε") {
-                    unsigned char c = (unsigned char)term[0];
-                    std::strcpy(parseTable[Aidx][c], prod);
+                    parseTable[Aidx][term] = string(prod);
                 }
             }
+            // If ε is in FIRST(prod), then for every terminal in FOLLOW(A) add production,
+            // but only if there isn't already a production entered.
             if (firstProd.find("ε") != firstProd.end()) {
                 for (auto &fw : followSets[Aidx]) {
-                    unsigned char c = (unsigned char)fw[0];
-                    std::strcpy(parseTable[Aidx][c], prod);
+                    if (parseTable[Aidx].find(fw) == parseTable[Aidx].end()) {
+                        parseTable[Aidx][fw] = string(prod);
+                    }
                 }
             }
         }
@@ -501,145 +543,95 @@ void buildParseTable() {
 }
 
 // ------------------------------------------------------------------
-// ASCII Printing for FIRST and FOLLOW sets
+// Print FIRST and FOLLOW sets.
 // ------------------------------------------------------------------
-void printFirstAndFollowSets() {
-    using namespace std;
-    int colWidthNT = 6;
-    int colWidthFirst = 10;
-    int colWidthFollow = 10;
-    vector<string> firstStr(grammarCount), followStr(grammarCount);
+void printSets() {
+    printf("\nFIRST Sets:\n");
     for (int i = 0; i < grammarCount; i++) {
-        char label[5];
-        label[0] = grammar[i].nonTerminal;
-        int p = 1;
-        if (primeMark[i]) {
-            label[p++] = '\'';
+        int idx = getNonTerminalIndex(grammar[i].nonTerminal, primeMark[i]);
+        printf("FIRST(");
+        printNonTerminal(i);
+        printf(") = { ");
+        for (auto &s : firstSets[idx]) {
+            printf("%s ", s.c_str());
         }
-        label[p] = '\0';
-        string fs = "{ ";
-        bool firstItem = true;
-        for (auto &s : firstSets[getNonTerminalIndex(grammar[i].nonTerminal, primeMark[i])]) {
-            if (!firstItem) fs += ", ";
-            fs += s;
-            firstItem = false;
-        }
-        fs += " }";
-        string fws = "{ ";
-        firstItem = true;
-        for (auto &s : followSets[getNonTerminalIndex(grammar[i].nonTerminal, primeMark[i])]) {
-            if (!firstItem) fws += ", ";
-            fws += s;
-            firstItem = false;
-        }
-        fws += " }";
-        firstStr[i] = fs;
-        followStr[i] = fws;
-        int lenF = (int)fs.size();
-        int lenW = (int)fws.size();
-        if (lenF > colWidthFirst) colWidthFirst = lenF;
-        if (lenW > colWidthFollow) colWidthFollow = lenW;
+        printf("}\n");
     }
-    int totalWidth = colWidthNT + colWidthFirst + colWidthFollow + 10;
-    cout << "\nFIRST and FOLLOW Sets:\n\n";
-    for (int i = 0; i < totalWidth; i++) cout << "-";
-    cout << "\n";
-    cout << "| " << setw(colWidthNT) << left << "NT"
-         << " | " << setw(colWidthFirst) << left << "FIRST"
-         << " | " << setw(colWidthFollow) << left << "FOLLOW"
-         << " |\n";
-    for (int i = 0; i < totalWidth; i++) cout << "-";
-    cout << "\n";
+    
+    printf("\nFOLLOW Sets:\n");
     for (int i = 0; i < grammarCount; i++) {
-        char label[5];
-        label[0] = grammar[i].nonTerminal;
-        int p = 1;
-        if (primeMark[i]) {
-            label[p++] = '\'';
+        int idx = getNonTerminalIndex(grammar[i].nonTerminal, primeMark[i]);
+        printf("FOLLOW(");
+        printNonTerminal(i);
+        printf(") = { ");
+        for (auto &s : followSets[idx]) {
+            printf("%s ", s.c_str());
         }
-        label[p] = '\0';
-        cout << "| " << setw(colWidthNT) << left << label
-             << " | " << setw(colWidthFirst) << left << firstStr[i]
-             << " | " << setw(colWidthFollow) << left << followStr[i]
-             << " |\n";
-        for (int x = 0; x < totalWidth; x++) cout << "-";
-        cout << "\n";
+        printf("}\n");
     }
-    cout << "\n";
 }
+#include <iomanip>  // Include for setw, left, etc.
 
 // ------------------------------------------------------------------
-// Print the LL(1) Parsing Table in an ASCII grid
+// Print the LL(1) Parsing Table in a formatted table.
 // ------------------------------------------------------------------
-void printLL1ParseTable() {
-    using namespace std;
-    set<char> terminalsUsed;
-    for (int i = 0; i < MAX_NONTERMINALS; i++) {
-        for (int t = 0; t < MAX_TERM; t++) {
-            if (parseTable[i][t][0] != '\0') {
-                terminalsUsed.insert((char)t);
-            }
-        }
-    }
-    vector<char> termVec(terminalsUsed.begin(), terminalsUsed.end());
-    const int NT_COL_WIDTH = 6;
-    const int CELL_WIDTH = 15;
-    int totalCols = 1 + termVec.size();
-    ostringstream borderStream;
-    borderStream << "+";
-    borderStream << string(NT_COL_WIDTH, '-') << "+";
-    for (size_t i = 0; i < termVec.size(); i++) {
-        borderStream << string(CELL_WIDTH, '-') << "+";
-    }
-    string horizontalBorder = borderStream.str();
+void printParseTable() {
     cout << "\nLL(1) Parsing Table:\n";
-    cout << horizontalBorder << "\n";
-    cout << "| " << setw(NT_COL_WIDTH - 2) << left << "NT" << " |";
-    for (auto c : termVec) {
-        string colLabel(1, c);
-        cout << " " << setw(CELL_WIDTH - 2) << left << colLabel << " |";
-    }
-    cout << "\n" << horizontalBorder << "\n";
-    for (int i = 0; i < grammarCount; i++) {
-        char rowLabel[5];
-        rowLabel[0] = grammar[i].nonTerminal;
-        int pos = 1;
-        if (primeMark[i]) {
-            rowLabel[pos++] = '\'';
+    // Print header row with fixed width columns.
+    cout << left << setw(15) << "Nonterminal"
+         << left << setw(15) << "Terminal"
+         << "Production" << "\n";
+    cout << string(50, '-') << "\n";
+    
+    for (int i = 0; i < MAX_NONTERMINALS; i++) {
+        for (auto &entry : parseTable[i]) {
+            string terminal = entry.first;
+            string production = entry.second;
+            string nonterminal;
+            // Determine proper nonterminal label (e.g., A or A')
+            if (i >= 26)
+                nonterminal = string(1, 'A' + i - 26) + "'";
+            else
+                nonterminal = string(1, 'A' + i);
+            cout << left << setw(15) << nonterminal
+                 << left << setw(15) << terminal
+                 << production << "\n";
         }
-        rowLabel[pos] = '\0';
-        cout << "| " << setw(NT_COL_WIDTH - 2) << left << rowLabel << " |";
-        int rowIdx = getNonTerminalIndex(grammar[i].nonTerminal, primeMark[i]);
-        for (auto c : termVec) {
-            if (parseTable[rowIdx][(unsigned char)c][0] != '\0') {
-                char cell[2 * MAX_PROD_LENGTH];
-                snprintf(cell, sizeof(cell), "%s->%s", rowLabel, parseTable[rowIdx][(unsigned char)c]);
-                cout << " " << setw(CELL_WIDTH - 2) << left << cell << " |";
-            } else {
-                cout << " " << setw(CELL_WIDTH - 2) << left << " " << " |";
-            }
-        }
-        cout << "\n" << horizontalBorder << "\n";
     }
 }
+
 
 // ------------------------------------------------------------------
 // MAIN
 // ------------------------------------------------------------------
 int main() {
+    // 1. Read the CFG from "grammar.txt"
     readGrammar("grammar.txt");
-    std::cout << "Original Grammar:\n";
+    printf("Original Grammar:\n");
     printGrammar();
-    std::cout << "\nGrammar after Left Factoring:\n";
+
+    // 2. Apply Left Factoring
     leftFactoring();
+    printf("\nGrammar after Left Factoring:\n");
     printGrammar();
-    std::cout << "\nGrammar after Left Recursion Removal:\n";
+
+    // 3. Apply Left Recursion Removal
     removeLeftRecursion();
+    printf("\nGrammar after Left Recursion Removal:\n");
     printGrammar();
+
+    // 4. Compute FIRST sets
     computeFirst();
+
+    // 5. Compute FOLLOW sets
     computeFollow();
-    printFirstAndFollowSets();
+
+    // Print FIRST and FOLLOW sets
+    printSets();
+
+    // 6. Build LL(1) Parsing Table and print it.
     buildParseTable();
-    printLL1ParseTable();
+    printParseTable();
+
     return 0;
 }
